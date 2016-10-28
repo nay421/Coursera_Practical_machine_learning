@@ -1,0 +1,168 @@
+---
+title: "Practical Machine Learning - Week4 Peer-graded assignment"
+author: "NA"
+date: "27/10/2016"
+output: 
+    html_document: 
+        code_folding: show
+        toc: true
+        toc_float: 
+            collapsed: false
+            smooth_scroll: false
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, the goal is to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways - exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E). 
+
+The data for this project come from this source: http://groupware.les.inf.puc-rio.br/har. 
+
+Reference:
+*Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.*
+
+##Data cleaning
+
+First, read the train and test data into R. The following steps are taken to process the data.
+
+1. The first seven variables contain information on participant names, timestamps and time windows which are not essential for this analysis, thus will be removed. 
+
+2. Several variables contains missing only values only (NAs), they will be removed.
+
+3. Those variables with near-zero variance will be removed. 
+
+4. The training dataset is then split into train and test datasets for model fitting (60:40 ratio). 
+
+5. The test datasets will be split further into test_1 and test_2 (50:50) to allow out-of-sample error testing for the combined model. 
+
+
+```{r data_clearning}
+
+library(caret)
+train_data <- read.csv('~/Coursera/Practical Machine Learning/pml-training.csv', na.strings = c("NA","#DIV/0!",""))
+
+validation_data <- read.csv('~/Coursera/Practical Machine Learning/pml-testing.csv', na.strings = c("NA","#DIV/0!",""))
+
+train_data_clean <- train_data[, -c(1:7)]
+
+validation_data_clean <- validation_data[, -c(1:7)]
+
+#Remove those columns with missing values (except classe column)
+
+train_data_noNA <- train_data_clean[ ,!names(train_data_clean) %in% names(train_data_clean)[apply(train_data_clean, 2, anyNA)]]
+
+validation_data_clean_noNA <- validation_data_clean[ , !names(validation_data_clean) %in% names(validation_data_clean)[apply(validation_data_clean, 2, anyNA)]]
+
+#Remove near zero variables
+nzv(train_data_noNA)
+nzv(validation_data_clean_noNA)
+#Both datasets have 0 near zero variables
+
+#Data partition
+
+inTrain <- createDataPartition(train_data_noNA$classe, p = 0.60, list = FALSE)
+
+train_data <- train_data_noNA[inTrain, ]
+
+test_data <- train_data_noNA[-inTrain, ]
+
+inTest <- createDataPartition(test_data$classe, p = 0.5, list = FALSE)
+
+test_1 <- test_data[inTest,]
+
+test_2 <- test_data[-inTest, ]
+```
+
+##Predictive Model Building
+
+Random forest and decision tree models with cross-validation will be used. These two models will be stacked to create a combined model and will be compared with 'gbm [stochastic gradient boosting]' model using the final validation dataset. 
+
+### 1. Decision Tree Model fitting
+
+The decision tree model using *rpart* method in the caret package will be used. Five-fold cross validation will be performed. Accuracy of the model will be checked using the test dataset. 
+
+
+```{r}
+library(rattle)
+train_control <- trainControl(method = 'cv', number = 5)
+
+system.time(model_dt <- train(classe ~ . , data = train_data_noNA, method = 'rpart', trControl = train_control))
+
+fancyRpartPlot(model_dt$finalModel)
+predict_dt <- predict(model_dt, test_1)
+
+accuracy_dt <- confusionMatrix(predict_dt, test_1$classe)$overall[['Accuracy']]
+```
+
+
+
+### 2. Random Forest Model fitting
+
+The random forest model fitting using the caret default 'rf' method will be used. Five-fold cross validation will be used in train_control. Since the process is computing intensive, parallel processing will be used. Accuracy of the model will be checked using the test dataset. 
+
+
+```{r}
+
+library(doMC)
+registerDoMC(cores = 3)
+
+model_rf <- train(classe ~ ., data = train_data , method = 'rf', trControl = train_control)
+predict_rf <- predict(model_rf, test_1)
+
+accuracy_rf <- confusionMatrix(predict_rf, test_1$classe)$overall[['Accuracy']]
+
+```
+
+
+
+
+
+### 3. Stacked model
+
+In order to created a combine stacked model of decision tree and random forest, a new dataset which contains prediction from both models needs to be created. This dataset is used to validate the 'Generalised Addictive Model' (gam) method.  
+
+```{r}
+
+new_data <- data.frame(predict_dt, predict_rf, 'classe' = test_1$classe)
+
+model_gam <- train(classe ~ . , data = new_data, method = 'gam')
+
+predict_gam <- predict(model_gam, test_2)
+
+
+accuracy_gam <- confusionMatrix(predict_gam, test_2$classe)$overall[['Accuracy']]
+
+```
+
+
+### 4. GBM model
+
+```{r}
+
+model_gbm <- train(classe ~ . , data = train_data, method = 'gbm', trControl = train_control)
+
+predict_gbm <- predict(model_gbm, test_1)
+
+accuracy_gbm <- confusionMatrix(predict_gbm, test_1$classe)$overall[['Accuracy']]
+
+```
+
+
+##Summary
+
+The accuracy of the decision tree model is `r accuracy_dt`.
+The accuracy of the decision tree model is `r accuracy_rf`. 
+The accuracy of gam is `r accuracy_gam`.
+The accuracy of gbm is `r accuracy_gbm`.
+
+
+In summary, the random forest model performed extremely well even better than the boosted model (GBM). The stacked model which combined decision tree and random forest predictions performed poorly. Therefore, the random forest model is applied to the validation dataset with 20 rows. 
+
+```{r}
+predict_validation <- predict(model_rf, validation_data_clean_noNA)
+predict_validation
+
+```
